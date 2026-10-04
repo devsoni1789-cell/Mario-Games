@@ -139,7 +139,6 @@ public class GameView extends View {
         spikes.clear();
         springs.clear();
         checkpoints.clear();
-        checkpointReached = false;
 
         boolean[] gap = new boolean[cols];
         // Every gap is deliberately bounded to the tested jump envelope.
@@ -249,20 +248,29 @@ public class GameView extends View {
     }
 
     void startLevel(int lvl) {
+        boolean preserveCheckpoint = state == DYING && level == lvl && checkpointReached;
+        if (!preserveCheckpoint) checkpointReached = false;
+
         level = lvl;
         buildLevel(lvl);
+
+        if (preserveCheckpoint) {
+            for (Checkpoint cp : checkpoints) {
+                if (Math.abs(cp.x - checkpointX) < 1.5f) cp.reached = true;
+            }
+        }
+
         particles.clear();
         p.w = 0.7f;
         p.h = big ? 1.7f : 0.9f;
-        p.x = 2;
+        p.x = checkpointReached && checkpointX > 2 ? checkpointX : 2;
         p.y = 12 - p.h;
         p.vx = 0;
         p.vy = 0;
         pendingGrow = false;
         combo = 0;
         comboTimer = 0;
-        camX = 0;
-        if (checkpointReached && checkpointX > 2) p.x = checkpointX;
+        camX = Math.max(0, p.x - 2);
         invuln = 0;
         facing = 1;
         state = PLAY;
@@ -337,6 +345,27 @@ public class GameView extends View {
         }
     }
 
+    void resolveDynamicSurfaces(Body b, float previousY, float previousVy) {
+        if (previousVy < 0) return;
+
+        float previousBottom = previousY + b.h;
+        float currentBottom = b.y + b.h;
+        float bestY = Float.MAX_VALUE;
+
+        for (Platform pl : platforms) {
+            if (b.x + b.w <= pl.x || b.x >= pl.x + pl.w) continue;
+            if (previousBottom <= pl.y + 0.12f && currentBottom >= pl.y) {
+                if (pl.y < bestY) bestY = pl.y;
+            }
+        }
+
+        if (bestY != Float.MAX_VALUE) {
+            b.y = bestY - b.h;
+            b.vy = 0;
+            b.ground = true;
+        }
+    }
+
     void update(float dt) {
         time += dt;
         stateTime += dt;
@@ -397,10 +426,13 @@ public class GameView extends View {
         if (!jumpHeld && p.vy < -7f) p.vy = -7f;
 
         if (pendingGrow) tryApplyGrowth();
+        float previousPlayerY = p.y;
+        float previousPlayerVy = p.vy;
         physics(p, dt);
-        if (p.headTx >= 0) hitBlock(p.headTx, p.headTy);
         updatePlatforms(dt);
-        updateSpringsAndCheckpoints();
+        resolveDynamicSurfaces(p, previousPlayerY, previousPlayerVy);
+        if (p.headTx >= 0) hitBlock(p.headTx, p.headTy);
+        updateSpringsAndCheckpoints(previousPlayerY, previousPlayerVy);
         checkSpikes();
 
         if (Math.abs(p.vx) > 0.5f && p.ground) walkPhase += Math.abs(p.vx) * dt * 1.6f;
@@ -436,7 +468,10 @@ public class GameView extends View {
                 continue;
             }
             e.b.vx = e.dir * (1.8f + Math.min(0.8f, level * 0.04f));
+            float previousEnemyY = e.b.y;
+            float previousEnemyVy = e.b.vy;
             physics(e.b, dt);
+            resolveDynamicSurfaces(e.b, previousEnemyY, previousEnemyVy);
             if (e.b.wall) e.dir = -e.dir;
             if (e.b.y > ROWS + 2) {
                 it.remove();
@@ -1020,9 +1055,13 @@ public class GameView extends View {
         }
     }
 
-    void updateSpringsAndCheckpoints() {
+    void updateSpringsAndCheckpoints(float previousY, float previousVy) {
+        float previousBottom = previousY + p.h;
+        float currentBottom = p.y + p.h;
         for (Spring sp : springs) {
-            if (p.x+p.w > sp.x && p.x < sp.x+0.64f && p.y+p.h > sp.y && p.y+p.h < sp.y+0.7f && p.vy >= 0) {
+            boolean horizontal = p.x+p.w > sp.x && p.x < sp.x+0.64f;
+            boolean crossed = previousBottom <= sp.y + 0.18f && currentBottom >= sp.y;
+            if (horizontal && crossed && previousVy >= 0) {
                 p.y = sp.y - p.h;
                 p.vy = -24f;
                 score += 50;
