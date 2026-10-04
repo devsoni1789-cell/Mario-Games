@@ -22,7 +22,7 @@ public class GameView extends View {
 
     private float px = 90, py = 360, vx, vy, cameraX;
     private boolean left, right, jumpHeld, paused, gameOver, levelClear;
-    private boolean wasGrounded;
+    private boolean wasGrounded, jumpRequested;
     private int lives = 3, score, coinCount;
     private long lastNanos;
     private float levelTime = 300f;
@@ -139,7 +139,7 @@ public class GameView extends View {
             vx = moveToward(vx, 0, 1900f * dt);
         }
 
-        if (jumpHeld && grounded && !wasGrounded) vy = -JUMP;
+        if (jumpRequested && grounded) { vy = -JUMP; jumpRequested = false; }
         wasGrounded = grounded;
 
         vy += GRAVITY * dt;
@@ -360,9 +360,9 @@ public class GameView extends View {
         if (down) {
             left = x < 125 && y > H - 150;
             right = x >= 125 && x < 245 && y > H - 150;
-            if (x > W - 160 && y > H - 165) jumpHeld = true;
+            if (x > W - 160 && y > H - 165) { jumpHeld = true; jumpRequested = true; }
         } else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) {
-            left = right = jumpHeld = false;
+            left = right = jumpHeld = jumpRequested = false;
         }
         return true;
     }
