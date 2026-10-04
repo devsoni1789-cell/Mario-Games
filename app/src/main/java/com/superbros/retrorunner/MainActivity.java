@@ -9,8 +9,7 @@ import android.view.WindowManager;
 public class MainActivity extends Activity {
     private GameView game;
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
@@ -30,26 +29,33 @@ public class MainActivity extends Activity {
                         | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
     }
 
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) {
-            hideSystemUi();
-            if (game != null) game.resetFrameClock();
-        }
+        if (hasFocus) hideSystemUi();
     }
 
-    @Override
-    protected void onPause() {
-        if (game != null && game.isPlaying()) game.pauseGame();
+    @Override protected void onResume() {
+        super.onResume();
+        if (game != null) game.lifecycleResume();
+        hideSystemUi();
+    }
+
+    @Override protected void onPause() {
+        if (game != null) game.lifecyclePause();
         super.onPause();
     }
 
-    @Override
-    @SuppressWarnings("deprecation")
+    @Override protected void onDestroy() {
+        if (game != null) game.stopLoop();
+        super.onDestroy();
+    }
+
+    @Override @SuppressWarnings("deprecation")
     public void onBackPressed() {
         if (game != null && game.isPlaying()) {
             game.pauseGame();
+        } else if (game != null && game.isPaused()) {
+            game.resumeGame();
         } else {
             super.onBackPressed();
         }
