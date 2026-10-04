@@ -83,6 +83,7 @@ public class GameView extends View {
 
     public boolean isFinished() { return gameOver || levelClear; }
     public boolean isPlaying() { return !paused && !isFinished(); }
+    public boolean isPaused() { return paused && !isFinished(); }
 
     public void togglePause() { paused = !paused; lastNanos = System.nanoTime(); }
     public void setPaused(boolean value) { paused = value; lastNanos = System.nanoTime(); }
