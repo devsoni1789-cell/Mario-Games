@@ -12,6 +12,7 @@ import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.view.MotionEvent;
 import android.view.View;
+import android.os.SystemClock;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -71,13 +72,28 @@ public class GameView extends View {
     int state = TITLE;
     float stateTime = 0, time = 0, acc = 0;
     long last = 0;
+    private GameLoop gameLoop;
+    private final SaveManager saveManager;
+    private final SoundManager soundManager;
+    private final TouchController touchController;
     int level = 1, lives = 3, coins = 0, score = 0, best = 0;
     boolean big = false;
     float invuln = 0, coyote = 0, jumpBuffer = 0, walkPhase = 0, camX = 0;
     int facing = 1;
     boolean left, right, jumpHeld, jumpQueued;
     boolean touchActive;
-
+    boolean pendingGrow = false;
+    boolean muted = false;
+    int stars = 0;
+    int combo = 0;
+    float comboTimer = 0;
+    float shake = 0;
+    final List<Platform> platforms = new ArrayList<>();
+    final List<Spike> spikes = new ArrayList<>();
+    final List<Spring> springs = new ArrayList<>();
+    final List<Checkpoint> checkpoints = new ArrayList<>();
+    boolean checkpointReached = false;
+    int checkpointX = 2;
     final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     final RectF rect = new RectF();
     final Path path = new Path();
@@ -92,6 +108,12 @@ public class GameView extends View {
         prefs = ctx.getSharedPreferences("retrorunner", Context.MODE_PRIVATE);
         best = prefs.getInt("best", 0);
         paint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+        saveManager = new SaveManager(ctx);
+        soundManager = new SoundManager();
+        touchController = new TouchController();
+        muted = saveManager.isMuted();
+        stars = saveManager.getStars();
+        gameLoop = new GameLoop(this);
         startLevel(1);
         state = TITLE;
     }
@@ -113,15 +135,22 @@ public class GameView extends View {
         enemies.clear();
         powerUps.clear();
         bumps.clear();
+        platforms.clear();
+        spikes.clear();
+        springs.clear();
+        checkpoints.clear();
+        checkpointReached = false;
 
         boolean[] gap = new boolean[cols];
-        int gapChance = Math.min(20 + lvl * 4, 45);
+        // Every gap is deliberately bounded to the tested jump envelope.
+        // Longer gaps are possible only when a landing platform is inserted.
+        int gapChance = Math.min(12 + lvl * 2, 28);
         int x = 14;
         while (x < cols - 16) {
             if (r.nextInt(100) < gapChance) {
-                int w = 2 + r.nextInt(3);
+                int w = 1 + r.nextInt(3); // never blindly create an impossible 4+ tile void
                 for (int i = 0; i < w && x + i < cols; i++) gap[x + i] = true;
-                x += w + 5 + r.nextInt(4);
+                x += w + 6 + r.nextInt(5);
             } else {
                 x += 3;
             }
@@ -131,6 +160,31 @@ public class GameView extends View {
                 map[12][c] = '#';
                 map[13][c] = '#';
             }
+        }
+
+        // Add deterministic hazards/platforms only where a ground route remains.
+        for (int c = 18; c < cols - 12; c += 13 + r.nextInt(9)) {
+            if (!gap[c] && !gap[Math.min(cols - 1, c + 1)] && lvl >= 2) {
+                spikes.add(new Spike(c + 0.18f, 11.55f, 0.64f, 0.45f));
+            }
+        }
+        if (lvl >= 2) {
+            for (int c = 25; c < cols - 18; c += 28 + r.nextInt(12)) {
+                if (gap[c]) continue;
+                Platform pl = new Platform();
+                pl.x = c; pl.y = 9.5f; pl.w = 2.4f; pl.h = 0.35f;
+                pl.baseX = pl.x; pl.range = 1.5f; pl.speed = 0.9f + lvl * 0.03f;
+                platforms.add(pl);
+            }
+        }
+        if (lvl >= 3) {
+            for (int c = 35; c < cols - 10; c += 37) {
+                if (!gap[c]) springs.add(new Spring(c + 0.18f, 11.35f));
+            }
+        }
+        if (lvl % 3 == 0) {
+            int cx = Math.min(cols - 14, 50 + lvl * 4);
+            if (!gap[cx]) checkpoints.add(new Checkpoint(cx + 0.25f, 10.2f));
         }
 
         int enemyChance = Math.min(2 + lvl, 4);
@@ -163,10 +217,16 @@ public class GameView extends View {
             }
             if (r.nextInt(6) < enemyChance + 1) {
                 int ex = x + 3 + r.nextInt(3);
-                if (ex + 1 < cols && !gap[ex] && !gap[ex + 1] && map[11][ex] == ' ') addEnemy(ex);
+                if (ex + 1 < cols && ex > 5 && !gap[ex] && !gap[ex + 1]
+                        && map[11][ex] == ' ' && !nearHazard(ex)) addEnemy(ex);
             }
             x += 7 + r.nextInt(5);
         }
+    }
+
+    boolean nearHazard(int tx) {
+        for (Spike sp : spikes) if (Math.abs(sp.x - tx) < 1.8f) return true;
+        return false;
     }
 
     void addEnemy(int tx) {
@@ -198,7 +258,11 @@ public class GameView extends View {
         p.y = 12 - p.h;
         p.vx = 0;
         p.vy = 0;
+        pendingGrow = false;
+        combo = 0;
+        comboTimer = 0;
         camX = 0;
+        if (checkpointReached && checkpointX > 2) p.x = checkpointX;
         invuln = 0;
         facing = 1;
         state = PLAY;
@@ -283,6 +347,10 @@ public class GameView extends View {
             if (b.t >= 1f) it.remove();
         }
 
+        if (comboTimer > 0) comboTimer -= dt;
+        else combo = 0;
+        shake = Math.max(0, shake - dt * 5f);
+
         if (state == PLAY) {
             updatePlay(dt);
         } else if (state == DYING) {
@@ -328,8 +396,12 @@ public class GameView extends View {
         }
         if (!jumpHeld && p.vy < -7f) p.vy = -7f;
 
+        if (pendingGrow) tryApplyGrowth();
         physics(p, dt);
         if (p.headTx >= 0) hitBlock(p.headTx, p.headTy);
+        updatePlatforms(dt);
+        updateSpringsAndCheckpoints();
+        checkSpikes();
 
         if (Math.abs(p.vx) > 0.5f && p.ground) walkPhase += Math.abs(p.vx) * dt * 1.6f;
         if (p.y > ROWS + 1) {
@@ -356,7 +428,6 @@ public class GameView extends View {
     }
 
     void updateEnemies(float dt) {
-        float viewT = W / T;
         for (Iterator<Enemy> it = enemies.iterator(); it.hasNext(); ) {
             Enemy e = it.next();
             if (!e.alive) {
@@ -364,8 +435,7 @@ public class GameView extends View {
                 if (e.squash > 0.5f) it.remove();
                 continue;
             }
-            if (e.b.x < camX - 3 || e.b.x > camX + viewT + 3) continue;
-            e.b.vx = e.dir * 1.8f;
+            e.b.vx = e.dir * (1.8f + Math.min(0.8f, level * 0.04f));
             physics(e.b, dt);
             if (e.b.wall) e.dir = -e.dir;
             if (e.b.y > ROWS + 2) {
@@ -376,11 +446,18 @@ public class GameView extends View {
             boolean overlap = p.x < e.b.x + e.b.w && p.x + p.w > e.b.x
                     && p.y < e.b.y + e.b.h && p.y + p.h > e.b.y;
             if (!overlap) continue;
-            if (p.vy > 0 && (p.y + p.h - e.b.y) < 0.6f) {
+            float playerBottom = p.y + p.h;
+            float previousBottom = playerBottom - p.vy * STEP;
+            boolean crossedEnemyTop = previousBottom <= e.b.y + 0.12f && playerBottom >= e.b.y;
+            if (p.vy > 0 && crossedEnemyTop && p.x + p.w > e.b.x + 0.12f
+                    && p.x < e.b.x + e.b.w - 0.12f) {
                 e.alive = false;
                 e.squash = 0;
                 p.vy = jumpHeld ? -15f : -10f;
-                score += 200;
+                combo = Math.min(combo + 1, 8);
+                comboTimer = 2f;
+                score += 200 * combo;
+                shake = 0.08f;
                 burst(e.b.x + e.b.w / 2, e.b.y + e.b.h / 2, 8, Color.rgb(170, 90, 220));
             } else if (invuln <= 0) {
                 hurt();
@@ -464,22 +541,52 @@ public class GameView extends View {
         bumps.add(b);
     }
 
+    boolean overlapsSolid(float x, float y, float w, float h) {
+        int l = (int)Math.floor(x + 0.02f), rr = (int)Math.floor(x + w - 0.02f);
+        int top = (int)Math.floor(y + 0.02f), bot = (int)Math.floor(y + h - 0.02f);
+        for (int ty = top; ty <= bot; ty++)
+            for (int tx = l; tx <= rr; tx++)
+                if (solid(tx, ty)) return true;
+        return false;
+    }
+
+    void tryApplyGrowth() {
+        if (big) { pendingGrow = false; return; }
+        float bottom = p.y + p.h;
+        float nh = 1.7f;
+        float ny = bottom - nh;
+        if (!overlapsSolid(p.x, ny, p.w, nh)) {
+            p.y = ny;
+            p.h = nh;
+            big = true;
+            pendingGrow = false;
+            score += 500;
+            shake = 0.1f;
+            soundManager.play(SoundManager.GROW, muted);
+        }
+    }
+
     void grow() {
         if (!big) {
-            big = true;
-            p.y -= 0.8f;
-            p.h = 1.7f;
+            pendingGrow = true;
+            tryApplyGrowth();
+        } else {
+            score += 250;
         }
-        score += 500;
     }
 
     void hurt() {
         if (big) {
+            float bottom = p.y + p.h;
+            float nh = 0.9f;
+            p.y = bottom - nh;
+            p.h = nh;
             big = false;
-            p.y += 0.8f;
-            p.h = 0.9f;
+            pendingGrow = false;
             invuln = 1.5f;
             p.vy = -8f;
+            shake = 0.12f;
+            soundManager.play(SoundManager.HURT, muted);
         } else {
             die();
         }
@@ -490,13 +597,16 @@ public class GameView extends View {
         stateTime = 0;
         lives--;
         p.vy = -14f;
+        shake = 0.2f;
+        soundManager.play(SoundManager.DIE, muted);
         p.vx = 0;
         clearInput();
         burst(p.x + p.w / 2, p.y + p.h / 2, 14, Color.WHITE);
     }
 
     void burst(float x, float y, int n, int color) {
-        for (int i = 0; i < n; i++) {
+        if (particles.size() > 220) particles.subList(0, Math.min(60, particles.size())).clear();
+        for (int i = 0; i < n && particles.size() < 260; i++) {
             Particle q = new Particle();
             q.x = x;
             q.y = y;
@@ -522,6 +632,22 @@ public class GameView extends View {
 
     void resetFrameClock() { last = System.nanoTime(); acc = 0; }
 
+    void onFrame(long nowNanos) {
+        if (last == 0) last = nowNanos;
+        float dt = (nowNanos - last) / 1e9f;
+        last = nowNanos;
+        dt = Math.min(dt, 0.05f);
+        acc += dt;
+        while (acc >= STEP) {
+            update(STEP);
+            acc -= STEP;
+        }
+        invalidate();
+    }
+
+    void startLoop() { if (gameLoop != null) gameLoop.start(); }
+    void stopLoop() { if (gameLoop != null) gameLoop.stop(); }
+
     boolean isPlaying() { return state == PLAY; }
     boolean isPaused() { return state == PAUSED; }
 
@@ -529,6 +655,7 @@ public class GameView extends View {
         if (state == PLAY) {
             state = PAUSED;
             clearInput();
+            stopLoop();
         }
     }
 
@@ -536,7 +663,29 @@ public class GameView extends View {
         if (state == PAUSED) {
             state = PLAY;
             resetFrameClock();
+            startLoop();
         }
+    }
+
+    void lifecyclePause() {
+        clearInput();
+        stopLoop();
+    }
+
+    void lifecycleResume() {
+        resetFrameClock();
+        if (state == PLAY) startLoop();
+    }
+
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        startLoop();
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        stopLoop();
+        soundManager.release();
+        super.onDetachedFromWindow();
     }
 
     void clearInput() {
@@ -548,66 +697,42 @@ public class GameView extends View {
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         final int act = e.getActionMasked();
-
         if (act == MotionEvent.ACTION_DOWN) {
-            touchActive = true;
-            if (state == TITLE) {
-                newGame();
-                return true;
-            }
-            if (state == OVER && stateTime > 0.8f) {
-                state = TITLE;
-                clearInput();
-                return true;
-            }
-            if (state == PAUSED) {
-                resumeGame();
-                return true;
-            }
+            if (state == TITLE) { newGame(); return true; }
+            if (state == OVER && stateTime > 0.8f) { state = TITLE; clearInput(); return true; }
+            if (state == PAUSED) { resumeGame(); return true; }
         }
-
         if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
-            clearInput();
-            return true;
+            clearInput(); return true;
         }
+        if (state != PLAY) return true;
 
-        if (state != PLAY && state != CLEAR) return true;
-
-        boolean l = false, r = false, j = false;
-        int skip = (act == MotionEvent.ACTION_POINTER_UP) ? e.getActionIndex() : -1;
-        for (int i = 0; i < e.getPointerCount(); i++) {
-            if (i == skip) continue;
-            float x = e.getX(i);
-            if (x > W * 0.5f) j = true;
-            else if (x < T * 4.2f) l = true;
-            else if (x < T * 8.2f) r = true;
+        boolean l=false,r=false,j=false;
+        int skip = act == MotionEvent.ACTION_POINTER_UP ? e.getActionIndex() : -1;
+        for(int i=0;i<e.getPointerCount();i++){
+            if(i==skip) continue;
+            TouchController.Action a=touchController.map(e.getX(i),e.getY(i),W,H,T);
+            if(a==TouchController.Action.LEFT) l=true;
+            if(a==TouchController.Action.RIGHT) r=true;
+            if(a==TouchController.Action.JUMP) j=true;
+            if(a==TouchController.Action.PAUSE){ pauseGame(); return true; }
         }
-        if (j && !jumpHeld) jumpQueued = true;
-        left = l;
-        right = r;
-        jumpHeld = j;
+        if(j && !jumpHeld) jumpQueued=true;
+        left=l; right=r; jumpHeld=j;
         return true;
     }
 
     @Override
     protected void onDraw(Canvas c) {
-        long now = System.nanoTime();
-        if (last == 0) last = now;
-        float dt = (now - last) / 1e9f;
-        last = now;
-        if (dt > 0.05f) dt = 0.05f;
-        acc += dt;
-        while (acc >= STEP) {
-            update(STEP);
-            acc -= STEP;
-        }
         render(c);
-        postInvalidateOnAnimation();
     }
 
     void render(Canvas c) {
         paint.setStyle(Paint.Style.FILL);
+        if (sky == null) sky = new LinearGradient(0, 0, 0, H, Color.rgb(90,170,255), Color.rgb(200,235,255), Shader.TileMode.CLAMP);
         paint.setShader(sky);
+        c.save();
+        if (shake > 0) c.translate((rnd.nextFloat()-0.5f)*T*shake*2f, (rnd.nextFloat()-0.5f)*T*shake*2f);
         c.drawRect(0, 0, W, H, paint);
         paint.setShader(null);
 
@@ -649,6 +774,10 @@ public class GameView extends View {
             }
         }
 
+        for (Platform pl : platforms) drawPlatform(c, pl);
+        for (Spike sp : spikes) drawSpike(c, sp);
+        for (Spring sp : springs) drawSpring(c, sp);
+        for (Checkpoint cp : checkpoints) drawCheckpoint(c, cp);
         drawGoal(c);
         for (PowerUp u : powerUps) drawGem(c, u);
         for (Enemy e : enemies) drawEnemy(c, e);
@@ -660,6 +789,7 @@ public class GameView extends View {
             c.drawRect((q.x - camX) * T - s, q.y * T - s, (q.x - camX) * T + s, q.y * T + s, paint);
         }
 
+        c.restore();
         drawHud(c);
         if (state == PLAY) drawControls(c);
         drawOverlays(c);
@@ -808,6 +938,9 @@ public class GameView extends View {
         text(c, "SCORE " + score, W / 2f, T * 0.9f, s, Paint.Align.CENTER, Color.WHITE, true);
         text(c, "LV " + level + "  LIVES " + Math.max(lives, 0), W - T * 0.5f, T * 0.9f, s,
                 Paint.Align.RIGHT, Color.WHITE, true);
+        if (combo > 1 && comboTimer > 0)
+            text(c, "COMBO x" + combo, W / 2f, T * 1.65f, T * 0.55f, Paint.Align.CENTER,
+                    Color.rgb(255,215,40), true);
     }
 
     void drawControls(Canvas c) {
@@ -815,6 +948,7 @@ public class GameView extends View {
         drawButton(c, T * 2.1f, cy, T * 1.4f, left, 0);
         drawButton(c, T * 6.2f, cy, T * 1.4f, right, 1);
         drawButton(c, W - T * 2.6f, cy - T * 0.2f, T * 1.7f, jumpHeld, 2);
+        drawButton(c, W - T * 0.65f, T * 0.75f, T * 0.48f, false, 3);
     }
 
     void drawButton(Canvas c, float cx, float cy, float r, boolean pressed, int kind) {
@@ -831,6 +965,13 @@ public class GameView extends View {
             path.moveTo(cx + a, cy);
             path.lineTo(cx - a * 0.6f, cy - a);
             path.lineTo(cx - a * 0.6f, cy + a);
+        } else if (kind == 3) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, r * 0.18f));
+            c.drawLine(cx-a*0.35f, cy-a, cx-a*0.35f, cy+a, paint);
+            c.drawLine(cx+a*0.35f, cy-a, cx+a*0.35f, cy+a, paint);
+            paint.setStyle(Paint.Style.FILL);
+            return;
         } else {
             path.moveTo(cx, cy - a);
             path.lineTo(cx - a, cy + a * 0.6f);
@@ -872,6 +1013,80 @@ public class GameView extends View {
         }
     }
 
+    void updatePlatforms(float dt) {
+        for (Platform pl : platforms) {
+            pl.phase += dt * pl.speed;
+            pl.x = pl.baseX + (float)Math.sin(pl.phase) * pl.range;
+        }
+    }
+
+    void updateSpringsAndCheckpoints() {
+        for (Spring sp : springs) {
+            if (p.x+p.w > sp.x && p.x < sp.x+0.64f && p.y+p.h > sp.y && p.y+p.h < sp.y+0.7f && p.vy >= 0) {
+                p.y = sp.y - p.h;
+                p.vy = -24f;
+                score += 50;
+                shake = 0.08f;
+                soundManager.play(SoundManager.JUMP, muted);
+            }
+        }
+        for (Checkpoint cp : checkpoints) {
+            if (!cp.reached && p.x+p.w > cp.x && p.x < cp.x+0.6f) {
+                cp.reached = true;
+                checkpointReached = true;
+                checkpointX = (int)cp.x;
+                lives = Math.max(lives, 2);
+                score += 300;
+                soundManager.play(SoundManager.COIN, muted);
+            }
+        }
+    }
+
+    void checkSpikes() {
+        for (Spike sp : spikes) {
+            if (p.x+p.w > sp.x+0.08f && p.x < sp.x+sp.w-0.08f
+                    && p.y+p.h > sp.y+0.05f && p.y < sp.y+sp.h) {
+                if (invuln <= 0) hurt();
+                return;
+            }
+        }
+    }
+
+    void drawPlatform(Canvas c, Platform pl) {
+        float x=(pl.x-camX)*T,y=pl.y*T;
+        paint.setColor(Color.rgb(70,130,180));
+        c.drawRoundRect(x,y,x+pl.w*T,y+pl.h*T,T*0.12f,T*0.12f,paint);
+        paint.setColor(Color.rgb(130,210,230));
+        c.drawRect(x,y,x+pl.w*T,y+pl.h*T*0.25f,paint);
+    }
+
+    void drawSpike(Canvas c, Spike sp) {
+        float x=(sp.x-camX)*T,y=sp.y*T,w=sp.w*T,h=sp.h*T;
+        paint.setColor(Color.rgb(220,220,225));
+        path.reset();
+        path.moveTo(x,y+h); path.lineTo(x+w*0.5f,y); path.lineTo(x+w,y+h); path.close();
+        c.drawPath(path,paint);
+    }
+
+    void drawSpring(Canvas c, Spring sp) {
+        float x=(sp.x-camX)*T,y=sp.y*T;
+        paint.setColor(Color.rgb(70,220,90));
+        c.drawRect(x,y,x+0.64f*T,y+0.22f*T,paint);
+        paint.setColor(Color.WHITE);
+        paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(T*0.06f);
+        c.drawArc(x+T*0.08f,y+T*0.05f,x+T*0.56f,y+T*0.45f,0,180,false,paint);
+        paint.setStyle(Paint.Style.FILL);
+    }
+
+    void drawCheckpoint(Canvas c, Checkpoint cp) {
+        float x=(cp.x-camX)*T,y=cp.y*T;
+        paint.setColor(cp.reached?Color.rgb(80,230,100):Color.rgb(230,230,230));
+        c.drawRect(x,y,x+T*0.12f,y+T*1.8f,paint);
+        paint.setColor(cp.reached?Color.rgb(80,230,100):Color.rgb(255,210,50));
+        path.reset(); path.moveTo(x+T*0.12f,y); path.lineTo(x+T*0.85f,y+T*0.28f);
+        path.lineTo(x+T*0.12f,y+T*0.58f); path.close(); c.drawPath(path,paint);
+    }
+
     void text(Canvas c, String s, float x, float y, float size, Paint.Align align, int color,
               boolean shadow) {
         paint.setTextSize(size);
@@ -883,4 +1098,9 @@ public class GameView extends View {
         paint.setColor(color);
         c.drawText(s, x, y, paint);
     }
+    static class Platform { float x,y,w,h,baseX,range,speed,phase; }
+    static class Spike { float x,y,w,h; Spike(float x,float y,float w,float h){this.x=x;this.y=y;this.w=w;this.h=h;} }
+    static class Spring { float x,y; Spring(float x,float y){this.x=x;this.y=y;} }
+    static class Checkpoint { float x,y; boolean reached; Checkpoint(float x,float y){this.x=x;this.y=y;} }
+
 }
