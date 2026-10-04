@@ -777,7 +777,7 @@ public class GameView extends View {
         for (Platform pl : platforms) drawPlatform(c, pl);
         for (Spike sp : spikes) drawSpike(c, sp);
         for (Spring sp : springs) drawSpring(c, sp);
-        for (Checkpoint cp : checkpoints) drawCheckpoint(c, cp);
+        for (Checkpoint checkpoint : checkpoints) drawCheckpoint(c, checkpoint);
         drawGoal(c);
         for (PowerUp u : powerUps) drawGem(c, u);
         for (Enemy e : enemies) drawEnemy(c, e);
