@@ -601,11 +601,11 @@ public class GameView extends View {
             update(STEP);
             acc -= STEP;
         }
-        draw(c);
+        render(c);
         postInvalidateOnAnimation();
     }
 
-    void draw(Canvas c) {
+    void render(Canvas c) {
         paint.setStyle(Paint.Style.FILL);
         paint.setShader(sky);
         c.drawRect(0, 0, W, H, paint);
