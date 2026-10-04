@@ -29,7 +29,7 @@ public class GameView extends View {
 
     static final int ROWS = 14;
     static final float STEP = 1f / 60f;
-    static final float GRAVITY = 55f, MAX_FALL = 28f, RUN = 7f, JUMP = 19f;
+    static final float GRAVITY = 55f, MAX_FALL = 28f, RUN = 8.5f, JUMP = 19.5f;
     static final int TITLE = 0, PLAY = 1, DYING = 2, CLEAR = 3, OVER = 4, PAUSED = 5;
 
     static class Body {
@@ -105,6 +105,7 @@ public class GameView extends View {
     public GameView(Context ctx) {
         super(ctx);
         setFocusable(true);
+        setLayerType(View.LAYER_TYPE_HARDWARE, null);
         prefs = ctx.getSharedPreferences("retrorunner", Context.MODE_PRIVATE);
         best = prefs.getInt("best", 0);
         paint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
@@ -406,8 +407,9 @@ public class GameView extends View {
     void updatePlay(float dt) {
         float target = (right ? 1 : 0) - (left ? 1 : 0);
         if (target != 0) facing = (int) target;
-        float accel = p.ground ? 14f : 7f;
+        float accel = p.ground ? 24f : 13f;
         p.vx += (target * RUN - p.vx) * Math.min(1f, accel * dt);
+        if (target == 0) p.vx *= Math.max(0f, 1f - 16f * dt);
 
         if (p.ground) coyote = 0.1f;
         else coyote -= dt;
@@ -671,9 +673,10 @@ public class GameView extends View {
         if (last == 0) last = nowNanos;
         float dt = (nowNanos - last) / 1e9f;
         last = nowNanos;
-        dt = Math.min(dt, 0.05f);
-        acc += dt;
-        while (acc >= STEP) {
+        dt = Math.min(dt, 0.033f);
+        acc = Math.min(acc + dt, STEP * 3f);
+        int steps = 0;
+        while (acc >= STEP && steps++ < 3) {
             update(STEP);
             acc -= STEP;
         }
