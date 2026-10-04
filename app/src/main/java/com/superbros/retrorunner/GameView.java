@@ -342,28 +342,68 @@ public class GameView extends View {
 
     @Override public boolean onTouchEvent(MotionEvent e) {
         float scale = Math.min(getWidth() / W, getHeight() / H);
-        float ox = (getWidth() - W * scale) / 2f, oy = (getHeight() - H * scale) / 2f;
-        float x = (e.getX() - ox) / scale, y = (e.getY() - oy) / scale;
+        float ox = (getWidth() - W * scale) / 2f;
+        float oy = (getHeight() - H * scale) / 2f;
 
-        if (e.getAction() == MotionEvent.ACTION_DOWN) {
-            if (isFinished()) { restart(); return true; }
-            if (x > W - 200 && x < W - 115 && y < 90) { togglePause(); return true; }
+        if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            float x0 = (e.getX(0) - ox) / scale;
+            float y0 = (e.getY(0) - oy) / scale;
+
+            if (isFinished()) {
+                restart();
+                return true;
+            }
+
+            if (x0 > W - 200 && x0 < W - 115 && y0 < 90) {
+                togglePause();
+                return true;
+            }
         }
 
         if (paused) {
-            if (e.getAction() == MotionEvent.ACTION_DOWN) togglePause();
             return true;
         }
 
-        boolean down = e.getAction() == MotionEvent.ACTION_DOWN ||
-                e.getAction() == MotionEvent.ACTION_MOVE;
-        if (down) {
-            left = x < 125 && y > H - 150;
-            right = x >= 125 && x < 245 && y > H - 150;
-            if (x > W - 160 && y > H - 165) { jumpHeld = true; jumpRequested = true; }
-        } else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) {
-            left = right = jumpHeld = jumpRequested = false;
+        boolean previousJump = jumpHeld;
+        boolean newLeft = false;
+        boolean newRight = false;
+        boolean newJump = false;
+
+        for (int i = 0; i < e.getPointerCount(); i++) {
+            float x = (e.getX(i) - ox) / scale;
+            float y = (e.getY(i) - oy) / scale;
+
+            if (y > H - 155) {
+                if (x < 130) newLeft = true;
+                else if (x < 255) newRight = true;
+                else if (x > W - 170) newJump = true;
+            }
         }
+
+        if (e.getActionMasked() == MotionEvent.ACTION_UP ||
+                e.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+            // Re-read remaining fingers after one finger is lifted.
+            newLeft = false;
+            newRight = false;
+            newJump = false;
+            for (int i = 0; i < e.getPointerCount() - 1; i++) {
+                float x = (e.getX(i) - ox) / scale;
+                float y = (e.getY(i) - oy) / scale;
+                if (y > H - 155) {
+                    if (x < 130) newLeft = true;
+                    else if (x < 255) newRight = true;
+                    else if (x > W - 170) newJump = true;
+                }
+            }
+        }
+
+        left = newLeft;
+        right = newRight;
+        jumpHeld = newJump;
+
+        if (jumpHeld && !previousJump) jumpRequested = true;
+        if (!jumpHeld) jumpRequested = false;
+
         return true;
     }
 
