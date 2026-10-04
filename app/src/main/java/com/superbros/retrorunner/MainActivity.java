@@ -19,10 +19,12 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        if (game.isFinished()) {
-            game.restart();
-        } else {
+        if (game.isPlaying()) {
             game.togglePause();
+        } else if (game.isPaused()) {
+            super.onBackPressed();
+        } else {
+            game.restart();
         }
     }
 
