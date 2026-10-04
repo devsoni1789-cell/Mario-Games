@@ -1,431 +1,886 @@
 package com.superbros.retrorunner;
 
 import android.content.Context;
-import android.graphics.*;
+import android.content.SharedPreferences;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RectF;
+import android.graphics.Shader;
+import android.graphics.Typeface;
 import android.view.MotionEvent;
 import android.view.View;
+
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Random;
 
+/**
+ * Retro Runner - an original side-scrolling platformer.
+ * Hero: "Bolt". Enemies: "Slimes". Pickups: coins and power gems.
+ * Levels are generated procedurally and get harder each time.
+ */
 public class GameView extends View {
-    private static final float W = 960f, H = 540f;
-    private static final float PW = 36f, PH = 54f;
-    private static final float GRAVITY = 1500f, RUN = 245f, JUMP = 610f;
 
-    private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final List<RectF> solids = new ArrayList<>();
-    private final List<Coin> coins = new ArrayList<>();
-    private final List<Enemy> enemies = new ArrayList<>();
-    private final List<PowerUp> powerUps = new ArrayList<>();
+    static final int ROWS = 14;
+    static final float STEP = 1f / 60f;
+    static final float GRAVITY = 55f, MAX_FALL = 28f, RUN = 7f, JUMP = 19f;
+    static final int TITLE = 0, PLAY = 1, DYING = 2, CLEAR = 3, OVER = 4, PAUSED = 5;
 
-    private float px = 90, py = 360, vx, vy, cameraX;
-    private boolean left, right, jumpHeld, paused, gameOver, levelClear;
-    private boolean wasGrounded, jumpRequested;
-    private int lives = 3, score, coinCount;
-    private long lastNanos;
-    private float levelTime = 300f;
+    static class Body {
+        float x, y, w, h, vx, vy;
+        boolean ground, wall;
+        int headTx = -1, headTy = -1;
+    }
 
-    public GameView(Context context) {
-        super(context);
-        text.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+    static class Enemy {
+        Body b = new Body();
+        int dir = -1;
+        boolean alive = true;
+        float squash = 0;
+    }
+
+    static class PowerUp {
+        Body b = new Body();
+        int dir = 1;
+    }
+
+    static class Particle {
+        float x, y, vx, vy, life, size;
+        int color;
+    }
+
+    static class Bump {
+        int tx, ty;
+        float t;
+    }
+
+    char[][] map = new char[ROWS][1];
+    int cols = 1;
+    final Body p = new Body();
+    final List<Enemy> enemies = new ArrayList<>();
+    final List<PowerUp> powerUps = new ArrayList<>();
+    final List<Particle> particles = new ArrayList<>();
+    final List<Bump> bumps = new ArrayList<>();
+    final Random rnd = new Random();
+
+    int state = TITLE;
+    float stateTime = 0, time = 0, acc = 0;
+    long last = 0;
+    int level = 1, lives = 3, coins = 0, score = 0, best = 0;
+    boolean big = false;
+    float invuln = 0, coyote = 0, jumpBuffer = 0, walkPhase = 0, camX = 0;
+    int facing = 1;
+    boolean left, right, jumpHeld, jumpQueued;
+    boolean touchActive;
+
+    final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    final RectF rect = new RectF();
+    final Path path = new Path();
+    Shader sky;
+    float T = 50f;
+    int W = 1, H = 1;
+    final SharedPreferences prefs;
+
+    public GameView(Context ctx) {
+        super(ctx);
         setFocusable(true);
-        buildLevel();
+        prefs = ctx.getSharedPreferences("retrorunner", Context.MODE_PRIVATE);
+        best = prefs.getInt("best", 0);
+        paint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+        startLevel(1);
+        state = TITLE;
     }
 
-    private void buildLevel() {
-        solids.clear(); coins.clear(); enemies.clear(); powerUps.clear();
-
-        addSolid(0, 450, 1150, 90);
-        addSolid(1300, 450, 850, 90);
-        addSolid(2300, 450, 1050, 90);
-        addSolid(3500, 450, 900, 90);
-        addSolid(4550, 450, 1050, 90);
-        addSolid(5750, 450, 1500, 90);
-
-        addSolid(360, 350, 190, 30); addSolid(720, 295, 180, 30);
-        addSolid(1420, 350, 210, 30); addSolid(1720, 285, 190, 30);
-        addSolid(2470, 350, 190, 30); addSolid(2800, 285, 210, 30);
-        addSolid(3700, 320, 190, 30); addSolid(4050, 260, 190, 30);
-        addSolid(4800, 350, 190, 30); addSolid(5200, 290, 220, 30);
-        addSolid(6100, 350, 190, 30); addSolid(6500, 290, 210, 30);
-
-        float[][] c = {
-            {410,315},{465,315},{770,260},{825,260},{1450,315},{1510,315},
-            {1750,250},{1810,250},{2500,315},{2560,315},{2840,250},{2900,250},
-            {3730,285},{3790,285},{4080,225},{4140,225},{4830,315},{4890,315},
-            {5240,255},{5300,255},{6130,315},{6190,315},{6530,255},{6590,255},
-            {6850,405}
-        };
-        for (float[] q : c) coins.add(new Coin(q[0], q[1]));
-
-        addEnemy(600, 418, 500, 1050);
-        addEnemy(1450, 318, 1370, 1630);
-        addEnemy(1900, 418, 1750, 2100);
-        addEnemy(2500, 318, 2350, 3250);
-        addEnemy(2920, 253, 2800, 3000);
-        addEnemy(3650, 418, 3520, 4350);
-        addEnemy(4700, 418, 4580, 5550);
-        addEnemy(6100, 318, 5950, 6300);
-        addEnemy(6650, 418, 6500, 7000);
-
-        powerUps.add(new PowerUp(800, 255));
+    @Override
+    protected void onSizeChanged(int w, int h, int ow, int oh) {
+        W = w;
+        H = h;
+        T = h / (float) ROWS;
+        sky = new LinearGradient(0, 0, 0, h, Color.rgb(90, 170, 255), Color.rgb(200, 235, 255),
+                Shader.TileMode.CLAMP);
     }
 
-    private void addSolid(float x, float y, float w, float h) {
-        solids.add(new RectF(x, y, x + w, y + h));
-    }
+    void buildLevel(int lvl) {
+        Random r = new Random(1234L + lvl * 7919L);
+        cols = Math.min(90 + lvl * 15, 220);
+        map = new char[ROWS][cols];
+        for (char[] row : map) Arrays.fill(row, ' ');
+        enemies.clear();
+        powerUps.clear();
+        bumps.clear();
 
-    private void addEnemy(float x, float y, float min, float max) {
-        enemies.add(new Enemy(x, y, min, max));
-    }
-
-    public boolean isFinished() { return gameOver || levelClear; }
-    public boolean isPlaying() { return !paused && !isFinished(); }
-    public boolean isPaused() { return paused && !isFinished(); }
-
-    public void togglePause() { paused = !paused; lastNanos = System.nanoTime(); }
-    public void setPaused(boolean value) { paused = value; lastNanos = System.nanoTime(); }
-
-    public void restart() {
-        lives = 3; score = 0; coinCount = 0; px = 90; py = 390;
-        vx = vy = cameraX = 0; paused = false; gameOver = false; levelClear = false;
-        levelTime = 300f; left = right = jumpHeld = false;
-        buildLevel();
-        lastNanos = System.nanoTime();
-        invalidate();
-    }
-
-    @Override protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
-        float scale = Math.min(getWidth() / W, getHeight() / H);
-        float ox = (getWidth() - W * scale) / 2f;
-        float oy = (getHeight() - H * scale) / 2f;
-        canvas.save();
-        canvas.translate(ox, oy);
-        canvas.scale(scale, scale);
-
-        drawWorld(canvas);
-        drawHud(canvas);
-
-        if (isPlaying()) {
-            updateFrame();
-        } else {
-            drawOverlay(canvas);
-        }
-        canvas.restore();
-
-        postInvalidateOnAnimation();
-    }
-
-    private void updateFrame() {
-        long now = System.nanoTime();
-        if (lastNanos == 0) lastNanos = now;
-        float dt = Math.min(0.025f, (now - lastNanos) / 1_000_000_000f);
-        lastNanos = now;
-        if (dt <= 0) return;
-
-        levelTime -= dt;
-        if (levelTime <= 0) { levelTime = 0; loseLife(); return; }
-
-        float oldY = py;
-        boolean grounded = isGrounded();
-
-        if (left && !right) {
-            vx = moveToward(vx, -RUN, 1500f * dt);
-        } else if (right && !left) {
-            vx = moveToward(vx, RUN, 1500f * dt);
-        } else {
-            vx = moveToward(vx, 0, 1900f * dt);
-        }
-
-        if (jumpRequested && grounded) { vy = -JUMP; jumpRequested = false; }
-        wasGrounded = grounded;
-
-        vy += GRAVITY * dt;
-        moveAndCollide(dt, oldY);
-        updateEnemies(dt);
-        updateCoins();
-        updatePowerUps();
-        cameraX = clamp(px - 300, 0, 6750);
-
-        if (py > 650) { loseLife(); return; }
-        if (px >= 7050) levelClear = true;
-    }
-
-    private float moveToward(float value, float target, float amount) {
-        if (value < target) return Math.min(target, value + amount);
-        return Math.max(target, value - amount);
-    }
-
-    private void moveAndCollide(float dt, float oldY) {
-        px += vx * dt;
-        px = clamp(px, 0, 7120);
-
-        float nextY = py + vy * dt;
-        if (vy >= 0) {
-            RectF next = playerRect(px, nextY);
-            for (RectF r : solids) {
-                if (next.right > r.left && next.left < r.right &&
-                        playerRect(px, oldY).bottom <= r.top && next.bottom >= r.top) {
-                    py = r.top - PH; vy = 0; return;
-                }
-            }
-        } else {
-            RectF next = playerRect(px, nextY);
-            for (RectF r : solids) {
-                if (next.right > r.left && next.left < r.right &&
-                        playerRect(px, oldY).top >= r.bottom && next.top <= r.bottom) {
-                    py = r.bottom; vy = 0; return;
-                }
+        boolean[] gap = new boolean[cols];
+        int gapChance = Math.min(20 + lvl * 4, 45);
+        int x = 14;
+        while (x < cols - 16) {
+            if (r.nextInt(100) < gapChance) {
+                int w = 2 + r.nextInt(3);
+                for (int i = 0; i < w && x + i < cols; i++) gap[x + i] = true;
+                x += w + 5 + r.nextInt(4);
+            } else {
+                x += 3;
             }
         }
-        py = nextY;
-    }
-
-    private boolean isGrounded() {
-        RectF feet = new RectF(px + 4, py + PH, px + PW - 4, py + PH + 5);
-        for (RectF r : solids) {
-            if (feet.right > r.left && feet.left < r.right &&
-                    feet.bottom >= r.top && feet.top <= r.top + 5) return true;
+        for (int c = 0; c < cols; c++) {
+            if (!gap[c]) {
+                map[12][c] = '#';
+                map[13][c] = '#';
+            }
         }
-        return false;
+
+        int enemyChance = Math.min(2 + lvl, 4);
+        x = 9;
+        while (x < cols - 18) {
+            int kind = r.nextInt(7);
+            if (kind == 0) {
+                int len = 3 + r.nextInt(3);
+                for (int i = 0; i < len && x + i < cols; i++)
+                    map[9][x + i] = (i % 2 == 1) ? '?' : 'B';
+            } else if (kind == 1) {
+                for (int i = 0; i < 5 && x + i < cols; i++) {
+                    int cy = (i == 0 || i == 4) ? 10 : (i == 2 ? 8 : 9);
+                    map[cy][x + i] = 'o';
+                }
+            } else if (kind == 2) {
+                int h = 2 + r.nextInt(2);
+                boolean ok = true;
+                for (int i = 0; i < h && x + i < cols; i++) if (gap[x + i]) ok = false;
+                if (ok) {
+                    for (int i = 0; i < h && x + i < cols; i++)
+                        for (int j = 0; j <= i; j++) map[11 - j][x + i] = '#';
+                }
+            } else if (kind == 3) {
+                if (x + 2 < cols) {
+                    map[8][x] = '?';
+                    map[8][x + 1] = 'B';
+                    map[8][x + 2] = '?';
+                }
+            }
+            if (r.nextInt(6) < enemyChance + 1) {
+                int ex = x + 3 + r.nextInt(3);
+                if (ex + 1 < cols && !gap[ex] && !gap[ex + 1] && map[11][ex] == ' ') addEnemy(ex);
+            }
+            x += 7 + r.nextInt(5);
+        }
     }
 
-    private void updateEnemies(float dt) {
-        RectF player = playerRect(px, py);
-        for (Enemy e : enemies) {
-            if (!e.alive) continue;
-            e.x += e.dir * 72f * dt;
-            if (e.x <= e.min) { e.x = e.min; e.dir = 1; }
-            if (e.x >= e.max) { e.x = e.max; e.dir = -1; }
+    void addEnemy(int tx) {
+        Enemy e = new Enemy();
+        e.b.w = 0.8f;
+        e.b.h = 0.8f;
+        e.b.x = tx + 0.1f;
+        e.b.y = 12 - e.b.h;
+        e.dir = rnd.nextBoolean() ? 1 : -1;
+        enemies.add(e);
+    }
 
-            RectF er = new RectF(e.x, e.y, e.x + 40, e.y + 32);
-            if (RectF.intersects(player, er)) {
-                if (vy > 80 && player.bottom - er.top < 24) {
-                    e.alive = false;
-                    score += 100;
-                    vy = -380;
+    void newGame() {
+        lives = 3;
+        coins = 0;
+        score = 0;
+        big = false;
+        clearInput();
+        startLevel(1);
+    }
+
+    void startLevel(int lvl) {
+        level = lvl;
+        buildLevel(lvl);
+        particles.clear();
+        p.w = 0.7f;
+        p.h = big ? 1.7f : 0.9f;
+        p.x = 2;
+        p.y = 12 - p.h;
+        p.vx = 0;
+        p.vy = 0;
+        camX = 0;
+        invuln = 0;
+        facing = 1;
+        state = PLAY;
+        stateTime = 0;
+        resetFrameClock();
+    }
+
+    boolean solid(int tx, int ty) {
+        if (tx < 0 || tx >= cols) return true;
+        if (ty < 0 || ty >= ROWS) return false;
+        char c = map[ty][tx];
+        return c == '#' || c == 'B' || c == '?' || c == 'U';
+    }
+
+    void physics(Body b, float dt) {
+        b.wall = false;
+        b.headTx = -1;
+        b.vy = Math.min(b.vy + GRAVITY * dt, MAX_FALL);
+
+        b.x += b.vx * dt;
+        int top = (int) Math.floor(b.y + 0.05f);
+        int bot = (int) Math.floor(b.y + b.h - 0.05f);
+        if (b.vx > 0) {
+            int tx = (int) Math.floor(b.x + b.w);
+            for (int ty = top; ty <= bot; ty++) {
+                if (solid(tx, ty)) {
+                    b.x = tx - b.w - 0.001f;
+                    b.vx = 0;
+                    b.wall = true;
+                    break;
+                }
+            }
+        } else if (b.vx < 0) {
+            int tx = (int) Math.floor(b.x);
+            for (int ty = top; ty <= bot; ty++) {
+                if (solid(tx, ty)) {
+                    b.x = tx + 1 + 0.001f;
+                    b.vx = 0;
+                    b.wall = true;
+                    break;
+                }
+            }
+        }
+
+        b.y += b.vy * dt;
+        b.ground = false;
+        int l = (int) Math.floor(b.x + 0.02f);
+        int rr = (int) Math.floor(b.x + b.w - 0.02f);
+        if (b.vy > 0) {
+            int ty = (int) Math.floor(b.y + b.h);
+            for (int tx = l; tx <= rr; tx++) {
+                if (solid(tx, ty)) {
+                    b.y = ty - b.h;
+                    b.vy = 0;
+                    b.ground = true;
+                    break;
+                }
+            }
+        } else if (b.vy < 0) {
+            int ty = (int) Math.floor(b.y);
+            int cx = (int) Math.floor(b.x + b.w / 2);
+            int hit = -1;
+            for (int tx = l; tx <= rr; tx++) {
+                if (solid(tx, ty) && (hit == -1 || tx == cx)) hit = tx;
+            }
+            if (hit != -1) {
+                b.y = ty + 1 + 0.001f;
+                b.vy = 0;
+                b.headTx = hit;
+                b.headTy = ty;
+            }
+        }
+    }
+
+    void update(float dt) {
+        time += dt;
+        stateTime += dt;
+        updateParticles(dt);
+        for (Iterator<Bump> it = bumps.iterator(); it.hasNext(); ) {
+            Bump b = it.next();
+            b.t += dt * 6f;
+            if (b.t >= 1f) it.remove();
+        }
+
+        if (state == PLAY) {
+            updatePlay(dt);
+        } else if (state == DYING) {
+            p.vy += GRAVITY * dt;
+            p.y += p.vy * dt;
+            if (stateTime > 1.6f) {
+                if (lives <= 0) {
+                    state = OVER;
+                    stateTime = 0;
+                    if (score > best) {
+                        best = score;
+                        prefs.edit().putInt("best", best).apply();
+                    }
                 } else {
-                    loseLife();
-                    return;
+                    big = false;
+                    startLevel(level);
+                }
+            }
+        } else if (state == CLEAR) {
+            if (stateTime > 2.2f) startLevel(level + 1);
+        }
+    }
+
+    void updatePlay(float dt) {
+        float target = (right ? 1 : 0) - (left ? 1 : 0);
+        if (target != 0) facing = (int) target;
+        float accel = p.ground ? 14f : 7f;
+        p.vx += (target * RUN - p.vx) * Math.min(1f, accel * dt);
+
+        if (p.ground) coyote = 0.1f;
+        else coyote -= dt;
+        jumpBuffer -= dt;
+        if (jumpQueued) {
+            jumpBuffer = 0.12f;
+            jumpQueued = false;
+        }
+        if (jumpBuffer > 0 && coyote > 0) {
+            p.vy = -JUMP;
+            p.ground = false;
+            coyote = 0;
+            jumpBuffer = 0;
+            burst(p.x + p.w / 2, p.y + p.h, 5, Color.rgb(230, 230, 230));
+        }
+        if (!jumpHeld && p.vy < -7f) p.vy = -7f;
+
+        physics(p, dt);
+        if (p.headTx >= 0) hitBlock(p.headTx, p.headTy);
+
+        if (Math.abs(p.vx) > 0.5f && p.ground) walkPhase += Math.abs(p.vx) * dt * 1.6f;
+        if (p.y > ROWS + 1) {
+            die();
+            return;
+        }
+        if (invuln > 0) invuln -= dt;
+
+        collectCoins();
+        updateEnemies(dt);
+        updatePowerUps(dt);
+
+        if (state == PLAY && p.x + p.w > cols - 5) {
+            state = CLEAR;
+            stateTime = 0;
+            score += 1000;
+            p.vx = 0;
+        }
+
+        float viewT = W / T;
+        float targetCam = p.x - viewT * 0.4f;
+        targetCam = Math.max(0, Math.min(targetCam, cols - viewT));
+        camX += (targetCam - camX) * Math.min(1f, 8f * dt);
+    }
+
+    void updateEnemies(float dt) {
+        float viewT = W / T;
+        for (Iterator<Enemy> it = enemies.iterator(); it.hasNext(); ) {
+            Enemy e = it.next();
+            if (!e.alive) {
+                e.squash += dt;
+                if (e.squash > 0.5f) it.remove();
+                continue;
+            }
+            if (e.b.x < camX - 3 || e.b.x > camX + viewT + 3) continue;
+            e.b.vx = e.dir * 1.8f;
+            physics(e.b, dt);
+            if (e.b.wall) e.dir = -e.dir;
+            if (e.b.y > ROWS + 2) {
+                it.remove();
+                continue;
+            }
+            if (state != PLAY) continue;
+            boolean overlap = p.x < e.b.x + e.b.w && p.x + p.w > e.b.x
+                    && p.y < e.b.y + e.b.h && p.y + p.h > e.b.y;
+            if (!overlap) continue;
+            if (p.vy > 0 && (p.y + p.h - e.b.y) < 0.6f) {
+                e.alive = false;
+                e.squash = 0;
+                p.vy = jumpHeld ? -15f : -10f;
+                score += 200;
+                burst(e.b.x + e.b.w / 2, e.b.y + e.b.h / 2, 8, Color.rgb(170, 90, 220));
+            } else if (invuln <= 0) {
+                hurt();
+            }
+        }
+    }
+
+    void updatePowerUps(float dt) {
+        for (Iterator<PowerUp> it = powerUps.iterator(); it.hasNext(); ) {
+            PowerUp u = it.next();
+            u.b.vx = u.dir * 2.5f;
+            physics(u.b, dt);
+            if (u.b.wall) u.dir = -u.dir;
+            if (u.b.y > ROWS + 2) {
+                it.remove();
+                continue;
+            }
+            boolean overlap = p.x < u.b.x + u.b.w && p.x + p.w > u.b.x
+                    && p.y < u.b.y + u.b.h && p.y + p.h > u.b.y;
+            if (overlap) {
+                grow();
+                burst(u.b.x + 0.4f, u.b.y + 0.4f, 12, Color.rgb(255, 80, 220));
+                it.remove();
+            }
+        }
+    }
+
+    void collectCoins() {
+        int x0 = (int) Math.floor(p.x), x1 = (int) Math.floor(p.x + p.w);
+        int y0 = (int) Math.floor(p.y), y1 = (int) Math.floor(p.y + p.h);
+        for (int ty = y0; ty <= y1; ty++) {
+            for (int tx = x0; tx <= x1; tx++) {
+                if (tx >= 0 && tx < cols && ty >= 0 && ty < ROWS && map[ty][tx] == 'o') {
+                    map[ty][tx] = ' ';
+                    addCoin();
+                    burst(tx + 0.5f, ty + 0.5f, 5, Color.rgb(255, 215, 40));
                 }
             }
         }
     }
 
-    private void updateCoins() {
-        RectF player = playerRect(px, py);
-        for (Coin c : coins) {
-            if (!c.taken && RectF.intersects(player, c.rect())) {
-                c.taken = true; coinCount++; score += 50;
+    void addCoin() {
+        coins++;
+        score += 100;
+        if (coins % 50 == 0) lives++;
+    }
+
+    void hitBlock(int tx, int ty) {
+        if (tx < 0 || tx >= cols || ty < 0 || ty >= ROWS) return;
+        char c = map[ty][tx];
+        if (c == '?') {
+            map[ty][tx] = 'U';
+            addBump(tx, ty);
+            if (rnd.nextInt(4) == 0) {
+                PowerUp u = new PowerUp();
+                u.b.w = 0.8f;
+                u.b.h = 0.8f;
+                u.b.x = tx + 0.1f;
+                u.b.y = ty - 0.85f;
+                u.b.vy = -6f;
+                powerUps.add(u);
+            } else {
+                addCoin();
+                burst(tx + 0.5f, ty - 0.2f, 6, Color.rgb(255, 215, 40));
+            }
+        } else if (c == 'B') {
+            if (big) {
+                map[ty][tx] = ' ';
+                score += 50;
+                burst(tx + 0.5f, ty + 0.5f, 10, Color.rgb(210, 110, 50));
+            } else {
+                addBump(tx, ty);
             }
         }
     }
 
-    private void updatePowerUps() {
-        RectF player = playerRect(px, py);
-        Iterator<PowerUp> it = powerUps.iterator();
-        while (it.hasNext()) {
-            PowerUp u = it.next();
-            if (!u.collected && RectF.intersects(player, u.rect())) {
-                u.collected = true; score += 500; it.remove();
-            }
+    void addBump(int tx, int ty) {
+        Bump b = new Bump();
+        b.tx = tx;
+        b.ty = ty;
+        bumps.add(b);
+    }
+
+    void grow() {
+        if (!big) {
+            big = true;
+            p.y -= 0.8f;
+            p.h = 1.7f;
+        }
+        score += 500;
+    }
+
+    void hurt() {
+        if (big) {
+            big = false;
+            p.y += 0.8f;
+            p.h = 0.9f;
+            invuln = 1.5f;
+            p.vy = -8f;
+        } else {
+            die();
         }
     }
 
-    private void loseLife() {
-        if (lives <= 1) { lives = 0; gameOver = true; return; }
+    void die() {
+        state = DYING;
+        stateTime = 0;
         lives--;
-        px = 90; py = 390; vx = vy = 0; cameraX = 0; levelTime = 300;
-        for (Enemy e : enemies) e.alive = true;
-        for (Coin c : coins) c.taken = false;
-        powerUps.clear(); powerUps.add(new PowerUp(800, 255));
-        lastNanos = System.nanoTime();
+        p.vy = -14f;
+        p.vx = 0;
+        clearInput();
+        burst(p.x + p.w / 2, p.y + p.h / 2, 14, Color.WHITE);
     }
 
-    private RectF playerRect(float x, float y) {
-        return new RectF(x + 4, y, x + PW - 4, y + PH);
-    }
-
-    private void drawWorld(Canvas c) {
-        p.setColor(Color.rgb(112, 196, 250)); c.drawRect(0, 0, W, H, p);
-
-        // Parallax hills and clouds.
-        p.setColor(Color.rgb(75, 185, 105));
-        for (int i = -2; i < 9; i++) {
-            float x = i * 190 - (cameraX * .16f % 190);
-            Path hill = new Path();
-            hill.moveTo(x, 450); hill.lineTo(x + 95, 345); hill.lineTo(x + 190, 450);
-            hill.close(); c.drawPath(hill, p);
+    void burst(float x, float y, int n, int color) {
+        for (int i = 0; i < n; i++) {
+            Particle q = new Particle();
+            q.x = x;
+            q.y = y;
+            q.vx = (rnd.nextFloat() - 0.5f) * 8f;
+            q.vy = -rnd.nextFloat() * 7f;
+            q.life = 0.5f + rnd.nextFloat() * 0.4f;
+            q.size = 0.12f + rnd.nextFloat() * 0.12f;
+            q.color = color;
+            particles.add(q);
         }
-        p.setColor(Color.WHITE);
-        for (int i = 0; i < 8; i++) {
-            float x = i * 260 + 80 - (cameraX * .08f % 260);
-            c.drawOval(x, 85 + (i % 3) * 35, x + 85, 125 + (i % 3) * 35, p);
-            c.drawOval(x + 35, 65 + (i % 3) * 35, x + 120, 125 + (i % 3) * 35, p);
+    }
+
+    void updateParticles(float dt) {
+        for (Iterator<Particle> it = particles.iterator(); it.hasNext(); ) {
+            Particle q = it.next();
+            q.x += q.vx * dt;
+            q.y += q.vy * dt;
+            q.vy += 30f * dt;
+            q.life -= dt;
+            if (q.life <= 0) it.remove();
         }
+    }
 
-        c.save();
-        c.translate(-cameraX, 0);
+    void resetFrameClock() { last = System.nanoTime(); acc = 0; }
 
-        for (RectF r : solids) {
-            p.setColor(r.top >= 440 ? Color.rgb(145, 91, 49) : Color.rgb(204, 136, 55));
-            c.drawRect(r, p);
-            p.setColor(r.top >= 440 ? Color.rgb(67, 160, 73) : Color.rgb(236, 177, 75));
-            c.drawRect(r.left, r.top, r.right, r.top + 7, p);
+    boolean isPlaying() { return state == PLAY; }
+    boolean isPaused() { return state == PAUSED; }
+
+    void pauseGame() {
+        if (state == PLAY) {
+            state = PAUSED;
+            clearInput();
         }
+    }
 
-        for (Coin coin : coins) if (!coin.taken) {
-            p.setColor(Color.rgb(255, 214, 40));
-            c.drawOval(coin.rect(), p);
-            p.setColor(Color.rgb(255, 238, 110));
-            c.drawOval(coin.x - 3, coin.y - 10, coin.x + 2, coin.y + 2, p);
+    void resumeGame() {
+        if (state == PAUSED) {
+            state = PLAY;
+            resetFrameClock();
         }
-
-        for (PowerUp u : powerUps) {
-            p.setColor(Color.rgb(238, 70, 80));
-            c.drawCircle(u.x + 14, u.y + 14, 14, p);
-            p.setColor(Color.WHITE);
-            c.drawCircle(u.x + 9, u.y + 10, 3, p);
-            c.drawCircle(u.x + 19, u.y + 10, 3, p);
-        }
-
-        for (Enemy e : enemies) if (e.alive) drawEnemy(c, e);
-        drawPlayer(c);
-
-        // Finish flag.
-        p.setColor(Color.DKGRAY); c.drawRect(7050, 175, 7058, 450, p);
-        p.setColor(Color.rgb(240, 70, 75));
-        Path flag = new Path(); flag.moveTo(7058, 180); flag.lineTo(7140, 205); flag.lineTo(7058, 230);
-        flag.close(); c.drawPath(flag, p);
-        c.restore();
     }
 
-    private void drawPlayer(Canvas c) {
-        p.setColor(Color.rgb(240, 145, 55)); c.drawRect(px + 7, py, px + 33, py + 16, p);
-        p.setColor(Color.rgb(30, 100, 140)); c.drawRect(px + 5, py + 15, px + 35, py + 42, p);
-        p.setColor(Color.rgb(248, 210, 165)); c.drawCircle(px + 20, py + 15, 11, p);
-        p.setColor(Color.DKGRAY); c.drawRect(px + 3, py + 41, px + 17, py + PH, p);
-        c.drawRect(px + 23, py + 41, px + 38, py + PH, p);
+    void clearInput() {
+        left = right = jumpHeld = false;
+        jumpQueued = false;
+        touchActive = false;
     }
 
-    private void drawEnemy(Canvas c, Enemy e) {
-        p.setColor(Color.rgb(135, 78, 48)); c.drawRoundRect(e.x, e.y, e.x + 40, e.y + 32, 9, 9, p);
-        p.setColor(Color.WHITE); c.drawCircle(e.x + 11, e.y + 12, 5, p); c.drawCircle(e.x + 29, e.y + 12, 5, p);
-        p.setColor(Color.DKGRAY); c.drawCircle(e.x + 11, e.y + 12, 2, p); c.drawCircle(e.x + 29, e.y + 12, 2, p);
-    }
+    @Override
+    public boolean onTouchEvent(MotionEvent e) {
+        final int act = e.getActionMasked();
 
-    private void drawHud(Canvas c) {
-        p.setColor(Color.argb(160, 0, 0, 0)); c.drawRoundRect(14, 14, 610, 62, 12, 12, p);
-        text.setColor(Color.WHITE); text.setTextSize(20);
-        c.drawText(String.format("SCORE %06d   COINS %02d   LIVES %d   TIME %03d",
-                score, coinCount, lives, (int) levelTime), 28, 45, text);
-
-        // Touch controls.
-        p.setColor(Color.argb(105, 0, 0, 0));
-        c.drawCircle(72, H - 70, 48, p); c.drawCircle(178, H - 70, 48, p);
-        c.drawCircle(W - 78, H - 72, 58, p);
-        text.setColor(Color.WHITE); text.setTextSize(34);
-        c.drawText("◀", 55, H - 58, text); c.drawText("▶", 160, H - 58, text);
-        c.drawText("▲", W - 98, H - 59, text);
-        c.drawText("Ⅱ", W - 160, 47, text);
-    }
-
-    private void drawOverlay(Canvas c) {
-        p.setColor(Color.argb(205, 0, 0, 0)); c.drawRect(0, 0, W, H, p);
-        text.setTextAlign(Paint.Align.CENTER); text.setColor(Color.WHITE); text.setTextSize(46);
-        c.drawText(levelClear ? "LEVEL CLEAR!" : gameOver ? "GAME OVER" : "PAUSED", W / 2, H / 2 - 20, text);
-        text.setTextSize(20); c.drawText(gameOver || levelClear ? "TAP TO PLAY AGAIN" : "TAP TO RESUME", W / 2, H / 2 + 30, text);
-        text.setTextAlign(Paint.Align.LEFT);
-    }
-
-    @Override public boolean onTouchEvent(MotionEvent e) {
-        float scale = Math.min(getWidth() / W, getHeight() / H);
-        float ox = (getWidth() - W * scale) / 2f;
-        float oy = (getHeight() - H * scale) / 2f;
-
-        if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
-            float x0 = (e.getX(0) - ox) / scale;
-            float y0 = (e.getY(0) - oy) / scale;
-
-            if (isFinished()) {
-                restart();
+        if (act == MotionEvent.ACTION_DOWN) {
+            touchActive = true;
+            if (state == TITLE) {
+                newGame();
                 return true;
             }
-
-            if (x0 > W - 200 && x0 < W - 115 && y0 < 90) {
-                togglePause();
+            if (state == OVER && stateTime > 0.8f) {
+                state = TITLE;
+                clearInput();
+                return true;
+            }
+            if (state == PAUSED) {
+                resumeGame();
                 return true;
             }
         }
 
-        if (paused) {
+        if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+            clearInput();
             return true;
         }
 
-        boolean previousJump = jumpHeld;
-        boolean newLeft = false;
-        boolean newRight = false;
-        boolean newJump = false;
+        if (state != PLAY && state != CLEAR) return true;
 
+        boolean l = false, r = false, j = false;
+        int skip = (act == MotionEvent.ACTION_POINTER_UP) ? e.getActionIndex() : -1;
         for (int i = 0; i < e.getPointerCount(); i++) {
-            float x = (e.getX(i) - ox) / scale;
-            float y = (e.getY(i) - oy) / scale;
-
-            if (y > H - 155) {
-                if (x < 130) newLeft = true;
-                else if (x < 255) newRight = true;
-                else if (x > W - 170) newJump = true;
-            }
+            if (i == skip) continue;
+            float x = e.getX(i);
+            if (x > W * 0.5f) j = true;
+            else if (x < T * 4.2f) l = true;
+            else if (x < T * 8.2f) r = true;
         }
-
-        if (e.getActionMasked() == MotionEvent.ACTION_UP ||
-                e.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-            // Re-read remaining fingers after one finger is lifted.
-            newLeft = false;
-            newRight = false;
-            newJump = false;
-            for (int i = 0; i < e.getPointerCount() - 1; i++) {
-                float x = (e.getX(i) - ox) / scale;
-                float y = (e.getY(i) - oy) / scale;
-                if (y > H - 155) {
-                    if (x < 130) newLeft = true;
-                    else if (x < 255) newRight = true;
-                    else if (x > W - 170) newJump = true;
-                }
-            }
-        }
-
-        left = newLeft;
-        right = newRight;
-        jumpHeld = newJump;
-
-        if (jumpHeld && !previousJump) jumpRequested = true;
-        if (!jumpHeld) jumpRequested = false;
-
+        if (j && !jumpHeld) jumpQueued = true;
+        left = l;
+        right = r;
+        jumpHeld = j;
         return true;
     }
 
-    private static float clamp(float v, float min, float max) {
-        return Math.max(min, Math.min(max, v));
+    @Override
+    protected void onDraw(Canvas c) {
+        long now = System.nanoTime();
+        if (last == 0) last = now;
+        float dt = (now - last) / 1e9f;
+        last = now;
+        if (dt > 0.05f) dt = 0.05f;
+        acc += dt;
+        while (acc >= STEP) {
+            update(STEP);
+            acc -= STEP;
+        }
+        draw(c);
+        postInvalidateOnAnimation();
     }
 
-    private static class Coin {
-        float x, y; boolean taken;
-        Coin(float x, float y) { this.x = x; this.y = y; }
-        RectF rect() { return new RectF(x - 9, y - 14, x + 9, y + 14); }
+    void draw(Canvas c) {
+        paint.setStyle(Paint.Style.FILL);
+        paint.setShader(sky);
+        c.drawRect(0, 0, W, H, paint);
+        paint.setShader(null);
+
+        paint.setColor(Color.rgb(120, 200, 130));
+        float period = T * 11;
+        float off = camX * T * 0.3f;
+        for (int i = -1; i < W / period + 2; i++) {
+            float cx = i * period - (off % period);
+            rect.set(cx - T * 5, 12 * T - T * 3, cx + T * 5, 12 * T + T * 4);
+            c.drawOval(rect, paint);
+        }
+
+        paint.setColor(Color.argb(230, 255, 255, 255));
+        float cp = T * 9;
+        float coff = camX * T * 0.5f;
+        for (int i = -1; i < W / cp + 2; i++) {
+            float cx = i * cp - (coff % cp);
+            float cy = T * (1.5f + ((i & 1) * 1.8f));
+            rect.set(cx, cy, cx + T * 2.4f, cy + T * 0.9f);
+            c.drawOval(rect, paint);
+            rect.set(cx + T * 0.5f, cy - T * 0.4f, cx + T * 1.8f, cy + T * 0.6f);
+            c.drawOval(rect, paint);
+        }
+
+        int c0 = Math.max(0, (int) camX - 1);
+        int c1 = Math.min(cols - 1, (int) (camX + W / T) + 1);
+        for (int ty = 0; ty < ROWS; ty++) {
+            for (int tx = c0; tx <= c1; tx++) {
+                char t = map[ty][tx];
+                if (t == ' ') continue;
+                float sx = (tx - camX) * T;
+                float sy = ty * T;
+                for (int i = 0; i < bumps.size(); i++) {
+                    Bump b = bumps.get(i);
+                    if (b.tx == tx && b.ty == ty) sy -= (float) Math.sin(b.t * Math.PI) * T * 0.3f;
+                }
+                boolean topOpen = ty == 0 || !solid(tx, ty - 1);
+                drawTile(c, t, sx, sy, topOpen);
+            }
+        }
+
+        drawGoal(c);
+        for (PowerUp u : powerUps) drawGem(c, u);
+        for (Enemy e : enemies) drawEnemy(c, e);
+        if (state != TITLE) drawPlayer(c);
+
+        for (Particle q : particles) {
+            paint.setColor(q.color);
+            float s = q.size * T;
+            c.drawRect((q.x - camX) * T - s, q.y * T - s, (q.x - camX) * T + s, q.y * T + s, paint);
+        }
+
+        drawHud(c);
+        if (state == PLAY) drawControls(c);
+        drawOverlays(c);
     }
 
-    private static class Enemy {
-        float x, y, min, max; int dir = 1; boolean alive = true;
-        Enemy(float x, float y, float min, float max) { this.x=x; this.y=y; this.min=min; this.max=max; }
+    void drawTile(Canvas c, char t, float x, float y, boolean topOpen) {
+        switch (t) {
+            case '#':
+                paint.setColor(Color.rgb(150, 95, 50));
+                c.drawRect(x, y, x + T + 1, y + T + 1, paint);
+                paint.setColor(Color.rgb(125, 75, 38));
+                c.drawRect(x + T * 0.2f, y + T * 0.55f, x + T * 0.4f, y + T * 0.7f, paint);
+                c.drawRect(x + T * 0.65f, y + T * 0.75f, x + T * 0.85f, y + T * 0.9f, paint);
+                if (topOpen) {
+                    paint.setColor(Color.rgb(80, 180, 70));
+                    c.drawRect(x, y, x + T + 1, y + T * 0.28f, paint);
+                }
+                break;
+            case 'B':
+                paint.setColor(Color.rgb(210, 110, 50));
+                c.drawRect(x, y, x + T + 1, y + T + 1, paint);
+                paint.setColor(Color.rgb(120, 55, 25));
+                c.drawRect(x, y + T * 0.48f, x + T + 1, y + T * 0.52f, paint);
+                c.drawRect(x + T * 0.48f, y, x + T * 0.52f, y + T * 0.48f, paint);
+                c.drawRect(x + T * 0.23f, y + T * 0.52f, x + T * 0.27f, y + T, paint);
+                c.drawRect(x, y, x + T + 1, y + T * 0.05f, paint);
+                break;
+            case '?':
+                paint.setColor(Color.rgb(250, 200, 40));
+                c.drawRect(x, y, x + T + 1, y + T + 1, paint);
+                paint.setColor(Color.rgb(160, 100, 10));
+                c.drawRect(x, y, x + T + 1, y + T * 0.07f, paint);
+                c.drawRect(x, y + T * 0.93f, x + T + 1, y + T + 1, paint);
+                c.drawRect(x, y, x + T * 0.07f, y + T + 1, paint);
+                c.drawRect(x + T * 0.93f, y, x + T + 1, y + T + 1, paint);
+                text(c, "?", x + T / 2, y + T * 0.72f, T * 0.7f, Paint.Align.CENTER,
+                        Color.rgb(140, 80, 0), false);
+                break;
+            case 'U':
+                paint.setColor(Color.rgb(130, 100, 70));
+                c.drawRect(x, y, x + T + 1, y + T + 1, paint);
+                paint.setColor(Color.rgb(90, 65, 45));
+                c.drawRect(x, y, x + T + 1, y + T * 0.07f, paint);
+                c.drawRect(x, y + T * 0.93f, x + T + 1, y + T + 1, paint);
+                break;
+            case 'o': {
+                float w = (0.25f + 0.25f * Math.abs((float) Math.cos(time * 4 + x * 0.01f))) * T;
+                paint.setColor(Color.rgb(255, 215, 40));
+                rect.set(x + T / 2 - w, y + T * 0.2f, x + T / 2 + w, y + T * 0.8f);
+                c.drawOval(rect, paint);
+                paint.setColor(Color.rgb(200, 150, 10));
+                rect.set(x + T / 2 - w * 0.5f, y + T * 0.32f, x + T / 2 + w * 0.5f, y + T * 0.68f);
+                c.drawOval(rect, paint);
+                break;
+            }
+            default:
+                break;
+        }
     }
 
-    private static class PowerUp {
-        float x, y; boolean collected;
-        PowerUp(float x, float y) { this.x=x; this.y=y; }
-        RectF rect() { return new RectF(x, y, x + 28, y + 28); }
+    void drawGoal(Canvas c) {
+        float x = (cols - 5 - camX) * T;
+        if (x < -T * 3 || x > W + T) return;
+        paint.setColor(Color.rgb(230, 230, 230));
+        c.drawRect(x + T * 0.4f, 5 * T, x + T * 0.55f, 12 * T, paint);
+        paint.setColor(Color.rgb(255, 215, 40));
+        c.drawCircle(x + T * 0.47f, 5 * T, T * 0.25f, paint);
+        paint.setColor(Color.rgb(230, 50, 80));
+        path.reset();
+        float wave = (float) Math.sin(time * 6) * T * 0.1f;
+        path.moveTo(x + T * 0.55f, 5.2f * T);
+        path.lineTo(x + T * 2.1f, 5.8f * T + wave);
+        path.lineTo(x + T * 0.55f, 6.5f * T);
+        path.close();
+        c.drawPath(path, paint);
+    }
+
+    void drawEnemy(Canvas c, Enemy e) {
+        float x = (e.b.x - camX) * T, y = e.b.y * T, w = e.b.w * T, h = e.b.h * T;
+        if (x < -T * 2 || x > W + T) return;
+        paint.setColor(Color.rgb(150, 70, 200));
+        if (!e.alive) {
+            rect.set(x, y + h * 0.72f, x + w, y + h);
+            c.drawRoundRect(rect, w * 0.3f, w * 0.3f, paint);
+            return;
+        }
+        rect.set(x, y + h * 0.1f, x + w, y + h);
+        c.drawRoundRect(rect, w * 0.45f, w * 0.45f, paint);
+        paint.setColor(Color.WHITE);
+        c.drawCircle(x + w * 0.3f, y + h * 0.42f, w * 0.15f, paint);
+        c.drawCircle(x + w * 0.7f, y + h * 0.42f, w * 0.15f, paint);
+        paint.setColor(Color.BLACK);
+        float po = e.dir * w * 0.05f;
+        c.drawCircle(x + w * 0.3f + po, y + h * 0.44f, w * 0.07f, paint);
+        c.drawCircle(x + w * 0.7f + po, y + h * 0.44f, w * 0.07f, paint);
+    }
+
+    void drawGem(Canvas c, PowerUp u) {
+        float x = (u.b.x - camX) * T, y = u.b.y * T, w = u.b.w * T, h = u.b.h * T;
+        float pulse = 1f + 0.08f * (float) Math.sin(time * 10);
+        paint.setColor(Color.rgb(255, 80, 220));
+        path.reset();
+        path.moveTo(x + w / 2, y);
+        path.lineTo(x + w * (0.5f + 0.5f * pulse), y + h / 2);
+        path.lineTo(x + w / 2, y + h);
+        path.lineTo(x + w * (0.5f - 0.5f * pulse), y + h / 2);
+        path.close();
+        c.drawPath(path, paint);
+        paint.setColor(Color.argb(200, 255, 255, 255));
+        c.drawCircle(x + w * 0.4f, y + h * 0.35f, w * 0.1f, paint);
+    }
+
+    void drawPlayer(Canvas c) {
+        if (invuln > 0 && ((int) (time * 20) & 1) == 0) return;
+        float x = (p.x - camX) * T, y = p.y * T, w = p.w * T, h = p.h * T;
+        float f = facing;
+        float wave = (float) Math.sin(time * 14) * h * 0.06f;
+        float sy = y + h * 0.38f;
+        paint.setColor(Color.rgb(230, 50, 60));
+        if (f > 0) rect.set(x - w * 0.55f, sy + wave, x + w * 0.2f, sy + h * 0.1f + wave);
+        else rect.set(x + w * 0.8f, sy + wave, x + w * 1.55f, sy + h * 0.1f + wave);
+        c.drawRect(rect, paint);
+        float sw = p.ground ? (float) Math.sin(walkPhase * 2) * w * 0.25f : w * 0.2f;
+        paint.setColor(Color.rgb(25, 50, 120));
+        rect.set(x + w * 0.1f + sw, y + h * 0.72f, x + w * 0.45f + sw, y + h);
+        c.drawRect(rect, paint);
+        rect.set(x + w * 0.55f - sw, y + h * 0.72f, x + w * 0.9f - sw, y + h);
+        c.drawRect(rect, paint);
+        paint.setColor(Color.rgb(40, 110, 230));
+        rect.set(x, y + h * 0.4f, x + w, y + h * 0.8f);
+        c.drawRoundRect(rect, w * 0.2f, w * 0.2f, paint);
+        paint.setColor(Color.rgb(255, 140, 0));
+        rect.set(x - w * 0.05f, y, x + w * 1.05f, y + h * 0.45f);
+        c.drawRoundRect(rect, w * 0.4f, w * 0.4f, paint);
+        paint.setColor(Color.rgb(255, 220, 180));
+        if (f > 0) rect.set(x + w * 0.4f, y + h * 0.15f, x + w * 1.0f, y + h * 0.38f);
+        else rect.set(x, y + h * 0.15f, x + w * 0.6f, y + h * 0.38f);
+        c.drawRect(rect, paint);
+        paint.setColor(Color.BLACK);
+        c.drawCircle(f > 0 ? x + w * 0.78f : x + w * 0.22f, y + h * 0.25f, w * 0.08f, paint);
+    }
+
+    void drawHud(Canvas c) {
+        float s = T * 0.6f;
+        text(c, "COINS " + coins, T * 0.5f, T * 0.9f, s, Paint.Align.LEFT, Color.WHITE, true);
+        text(c, "SCORE " + score, W / 2f, T * 0.9f, s, Paint.Align.CENTER, Color.WHITE, true);
+        text(c, "LV " + level + "  LIVES " + Math.max(lives, 0), W - T * 0.5f, T * 0.9f, s,
+                Paint.Align.RIGHT, Color.WHITE, true);
+    }
+
+    void drawControls(Canvas c) {
+        float cy = H - T * 2.0f;
+        drawButton(c, T * 2.1f, cy, T * 1.4f, left, 0);
+        drawButton(c, T * 6.2f, cy, T * 1.4f, right, 1);
+        drawButton(c, W - T * 2.6f, cy - T * 0.2f, T * 1.7f, jumpHeld, 2);
+    }
+
+    void drawButton(Canvas c, float cx, float cy, float r, boolean pressed, int kind) {
+        paint.setColor(Color.argb(pressed ? 130 : 70, 255, 255, 255));
+        c.drawCircle(cx, cy, r, paint);
+        paint.setColor(Color.argb(pressed ? 230 : 150, 255, 255, 255));
+        path.reset();
+        float a = r * 0.45f;
+        if (kind == 0) {
+            path.moveTo(cx - a, cy);
+            path.lineTo(cx + a * 0.6f, cy - a);
+            path.lineTo(cx + a * 0.6f, cy + a);
+        } else if (kind == 1) {
+            path.moveTo(cx + a, cy);
+            path.lineTo(cx - a * 0.6f, cy - a);
+            path.lineTo(cx - a * 0.6f, cy + a);
+        } else {
+            path.moveTo(cx, cy - a);
+            path.lineTo(cx - a, cy + a * 0.6f);
+            path.lineTo(cx + a, cy + a * 0.6f);
+        }
+        path.close();
+        c.drawPath(path, paint);
+    }
+
+    void drawOverlays(Canvas c) {
+        if (state == TITLE) {
+            paint.setColor(Color.argb(120, 0, 0, 0));
+            c.drawRect(0, 0, W, H, paint);
+            text(c, "RETRO RUNNER", W / 2f, H * 0.38f, T * 1.8f, Paint.Align.CENTER,
+                    Color.rgb(255, 215, 40), true);
+            text(c, "TAP TO START", W / 2f, H * 0.58f, T * 0.8f, Paint.Align.CENTER,
+                    Color.WHITE, true);
+            text(c, "BEST " + best, W / 2f, H * 0.72f, T * 0.6f, Paint.Align.CENTER,
+                    Color.WHITE, true);
+        } else if (state == CLEAR) {
+            text(c, "LEVEL " + level + " CLEAR!", W / 2f, H * 0.4f, T * 1.3f, Paint.Align.CENTER,
+                    Color.rgb(255, 215, 40), true);
+        } else if (state == PAUSED) {
+            paint.setColor(Color.argb(155, 0, 0, 0));
+            c.drawRect(0, 0, W, H, paint);
+            text(c, "PAUSED", W / 2f, H * 0.42f, T * 1.6f, Paint.Align.CENTER,
+                    Color.rgb(255, 215, 40), true);
+            text(c, "TAP TO RESUME", W / 2f, H * 0.60f, T * 0.7f, Paint.Align.CENTER,
+                    Color.WHITE, true);
+        } else if (state == OVER) {
+            paint.setColor(Color.argb(150, 0, 0, 0));
+            c.drawRect(0, 0, W, H, paint);
+            text(c, "GAME OVER", W / 2f, H * 0.42f, T * 1.8f, Paint.Align.CENTER,
+                    Color.rgb(255, 90, 90), true);
+            text(c, "SCORE " + score + "   BEST " + best, W / 2f, H * 0.58f, T * 0.7f,
+                    Paint.Align.CENTER, Color.WHITE, true);
+            text(c, "TAP TO CONTINUE", W / 2f, H * 0.72f, T * 0.6f, Paint.Align.CENTER,
+                    Color.WHITE, true);
+        }
+    }
+
+    void text(Canvas c, String s, float x, float y, float size, Paint.Align align, int color,
+              boolean shadow) {
+        paint.setTextSize(size);
+        paint.setTextAlign(align);
+        if (shadow) {
+            paint.setColor(Color.argb(180, 0, 0, 0));
+            c.drawText(s, x + size * 0.06f, y + size * 0.06f, paint);
+        }
+        paint.setColor(color);
+        c.drawText(s, x, y, paint);
     }
 }
