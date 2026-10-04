@@ -4,33 +4,27 @@ final class TouchController {
     enum Action { NONE, LEFT, RIGHT, JUMP, PAUSE }
 
     Action map(float x, float y, int w, int h, float tile) {
-        // Match the real on-screen button positions instead of using arbitrary
-        // percentages. This keeps controls correct on different aspect ratios.
-        float pauseR = tile * 0.9f;
-        float pauseX = w - tile * 0.65f;
-        float pauseY = tile * 0.75f;
-        if (x >= pauseX - pauseR && x <= pauseX + pauseR
-                && y >= pauseY - pauseR && y <= pauseY + pauseR) {
+        // Large forgiving touch zones. Controls are deliberately independent so
+        // LEFT/RIGHT + JUMP can be pressed simultaneously.
+        float pauseR = Math.max(tile * 0.95f, 48f);
+        float pauseX = w - Math.max(tile * 0.7f, 34f);
+        float pauseY = Math.max(tile * 0.75f, 42f);
+        if (x >= pauseX - pauseR && y <= pauseY + pauseR * 0.8f) {
             return Action.PAUSE;
         }
 
-        float cy = h - tile * 2.0f;
-        float leftX = tile * 2.1f;
-        float rightX = tile * 6.2f;
-        float jumpX = w - tile * 2.6f;
-        float jumpY = h - tile * 2.2f;
+        float buttonTop = h * 0.58f;
+        if (y < buttonTop) return Action.NONE;
 
-        float buttonR = tile * 1.55f;
-        if (y >= cy - buttonR && y <= cy + buttonR) {
-            if (Math.abs(x - leftX) <= buttonR) return Action.LEFT;
-            if (Math.abs(x - rightX) <= buttonR) return Action.RIGHT;
-        }
+        float leftZoneEnd = w * 0.27f;
+        float rightZoneEnd = w * 0.50f;
+        float jumpZoneStart = w * 0.72f;
 
-        float jumpR = tile * 1.85f;
-        if (Math.abs(x - jumpX) <= jumpR && Math.abs(y - jumpY) <= jumpR) {
-            return Action.JUMP;
-        }
+        if (x < leftZoneEnd) return Action.LEFT;
+        if (x < rightZoneEnd) return Action.RIGHT;
+        if (x >= jumpZoneStart) return Action.JUMP;
 
+        // Small dead zone in the middle prevents accidental direction changes.
         return Action.NONE;
     }
 }
