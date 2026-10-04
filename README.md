@@ -15,6 +15,8 @@ A self-contained original Android side-scrolling platform game written in plain 
 All graphics are original shapes drawn by the game engine; no Nintendo/Mario copyrighted assets are included.
 
 ## Build on GitHub
-Every push to `main` starts the **Build Super Bros APK** GitHub Actions workflow. It uses Java 17 and Gradle 8.7, builds the debug APK, verifies that the APK exists, and uploads it as `super-bros-debug-apk`.
+Every push to `main` starts the **Build Super Bros APK** GitHub Actions workflow. It uses Java 17 and Gradle 8.7, builds the debug APK, verifies that the APK exists, uploads it as `super-bros-debug-apk`, and publishes a downloadable GitHub Release.
 
 Manual build is also available from **Actions → Build Super Bros APK → Run workflow**.
+
+Latest build trigger: 2026-10-05.
