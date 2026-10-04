@@ -52,10 +52,10 @@ public class MainActivity extends Activity {
 
     @Override @SuppressWarnings("deprecation")
     public void onBackPressed() {
+        // Android-standard behavior: Back pauses active gameplay once.
+        // Pressing Back again while already paused leaves the Activity normally.
         if (game != null && game.isPlaying()) {
             game.pauseGame();
-        } else if (game != null && game.isPaused()) {
-            game.resumeGame();
         } else {
             super.onBackPressed();
         }
