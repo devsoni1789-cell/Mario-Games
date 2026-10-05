@@ -5,15 +5,17 @@ import android.media.AudioFormat;
 import android.media.AudioTrack;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Small dependency-free procedural SFX generator. */
 final class SoundManager {
     static final int COIN=1, JUMP=2, GROW=3, HURT=4, DIE=5;
     private final ExecutorService exec = Executors.newSingleThreadExecutor();
     private volatile boolean released;
+    private final AtomicBoolean playing = new AtomicBoolean(false);
 
     void play(final int type, boolean muted) {
-        if (muted || released) return;
+        if (muted || released || !playing.compareAndSet(false, true)) return;
         exec.execute(() -> {
             if (released) return;
             int rate=22050, ms=type==DIE?220:100, count=rate*ms/1000;
