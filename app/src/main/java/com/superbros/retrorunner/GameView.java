@@ -29,7 +29,7 @@ public class GameView extends View {
 
     static final int ROWS = 14;
     static final float STEP = 1f / 60f;
-    static final float GRAVITY = 55f, MAX_FALL = 28f, RUN = 8.5f, JUMP = 19.5f;
+    static final float GRAVITY = 55f, MAX_FALL = 28f, RUN = 8.5f, JUMP = 19.5f, JUMP_CUT = 8.5f;
     static final int TITLE = 0, PLAY = 1, DYING = 2, CLEAR = 3, OVER = 4, PAUSED = 5;
 
     static class Body {
@@ -142,13 +142,13 @@ public class GameView extends View {
         checkpoints.clear();
 
         boolean[] gap = new boolean[cols];
-        // Every gap is deliberately bounded to the tested jump envelope.
-        // Longer gaps are possible only when a landing platform is inserted.
+        // Keep procedural gaps reachable even with a short/tap jump.
+        // A held jump can clear more, but level generation should never require it.
         int gapChance = Math.min(12 + lvl * 2, 28);
         int x = 14;
         while (x < cols - 16) {
             if (r.nextInt(100) < gapChance) {
-                int w = 1 + r.nextInt(3); // never blindly create an impossible 4+ tile void
+                int w = 1 + r.nextInt(2); // 1–2 tile gaps are safe for both tap and held jumps
                 for (int i = 0; i < w && x + i < cols; i++) gap[x + i] = true;
                 x += w + 6 + r.nextInt(5);
             } else {
@@ -425,13 +425,14 @@ public class GameView extends View {
             jumpBuffer = 0;
             burst(p.x + p.w / 2, p.y + p.h, 5, Color.rgb(230, 230, 230));
         }
-        if (!jumpHeld && p.vy < -7f) p.vy = -7f;
+        if (!jumpHeld && p.vy < -JUMP_CUT) p.vy = -JUMP_CUT;
 
         if (pendingGrow) tryApplyGrowth();
         float previousPlayerY = p.y;
         float previousPlayerVy = p.vy;
-        physics(p, dt);
+        // Move dynamic platforms before collision resolution so visible and physics positions match.
         updatePlatforms(dt);
+        physics(p, dt);
         resolveDynamicSurfaces(p, previousPlayerY, previousPlayerVy);
         if (p.headTx >= 0) hitBlock(p.headTx, p.headTy);
         updateSpringsAndCheckpoints(previousPlayerY, previousPlayerVy);
@@ -553,7 +554,7 @@ public class GameView extends View {
                 u.b.w = 0.8f;
                 u.b.h = 0.8f;
                 u.b.x = tx + 0.1f;
-                u.b.y = ty - 0.85f;
+                u.b.y = Math.max(0.1f, ty - u.b.h - 0.05f);
                 u.b.vy = -6f;
                 powerUps.add(u);
             } else {
@@ -737,7 +738,8 @@ public class GameView extends View {
         final int act = e.getActionMasked();
         if (act == MotionEvent.ACTION_DOWN) {
             if (state == TITLE) { newGame(); return true; }
-            if (state == OVER && stateTime > 0.8f) { state = TITLE; clearInput(); return true; }
+            if (state == OVER && stateTime > 0.8f) { newGame(); return true; }
+            if (state == CLEAR) { startLevel(level + 1); return true; }
             if (state == PAUSED) { resumeGame(); return true; }
         }
         if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
@@ -1032,6 +1034,8 @@ public class GameView extends View {
         } else if (state == CLEAR) {
             text(c, "LEVEL " + level + " CLEAR!", W / 2f, H * 0.4f, T * 1.3f, Paint.Align.CENTER,
                     Color.rgb(255, 215, 40), true);
+            text(c, "TAP TO CONTINUE", W / 2f, H * 0.62f, T * 0.7f, Paint.Align.CENTER,
+                    Color.WHITE, true);
         } else if (state == PAUSED) {
             paint.setColor(Color.argb(155, 0, 0, 0));
             c.drawRect(0, 0, W, H, paint);
